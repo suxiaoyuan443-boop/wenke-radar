@@ -65,7 +65,7 @@ jobs:
             jobs-db-
 
       # Cache 只是加速通道（保留期短、可被驱逐，不能当唯一状态库）。
-      # 未命中时从最近一次运行上传的快照 artifact（90 天保留）恢复，去掉状态单点。
+      # 未命中时从最近一次运行上传的快照 artifact（14 天保留）恢复，去掉状态单点。
       - name: 快照兜底恢复（cache 未命中时）
         if: ${{ hashFiles('data/jobs.db') == '' }}
         env:
@@ -121,6 +121,7 @@ jobs:
           fi
 
       - name: 运行抓取
+        id: scrape
         if: steps.guard.outputs.skip != 'true'
         env:
           PUSH_KEY: ${{ secrets.PUSH_KEY }}
@@ -159,13 +160,19 @@ jobs:
             echo "数据库无效或缺失，本次不晋级为恢复快照"
           fi
 
-      - name: 上传数据库快照（90 天持久兜底）
-        if: ${{ always() && steps.snapcheck.outputs.ok == 'true' }}
+      # 只在抓取真正跑过（库可能变了）时上传；去重守卫跳过的运行库没变，上传纯属浪费。
+      # 每天多次触发全都上传 + 90 天保留，两个月就能堆出 1GB+ 撑爆免费账号的 artifact 配额，
+      # 导致每次运行标红而主流程其实全部正常。
+      # 快照只是 cache 失效时的兜底（cache 7 天不用才驱逐、每天在续命），14 天绰绰有余。
+      # continue-on-error：兜底机制自己失败绝不能把整次运行标红——红灯语义要留给"用户没收到推送"（送达检测）。
+      - name: 上传数据库快照（14 天兜底）
+        if: ${{ always() && steps.snapcheck.outputs.ok == 'true' && steps.scrape.outcome != 'skipped' }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: jobs-db-snapshot
           path: data/jobs.db
-          retention-days: 90
+          retention-days: 14
           if-no-files-found: ignore
 
       - name: 导出投递追踪表
